@@ -13,7 +13,7 @@ The Currency Converter API is a lightweight and efficient service built using Fa
 
 1. Clone the repository:
    ```bash
-   git clone https://github.com/your-repo/currency-converter-api.git
+   git clone <repository-url> currency-converter-api
    ```
 
 2. Navigate to the project directory:
