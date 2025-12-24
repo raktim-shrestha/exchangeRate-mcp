@@ -1,13 +1,50 @@
 import os
+import uvicorn
 from fastmcp import FastMCP
 import httpx
 from dotenv import load_dotenv
+from starlette.middleware import Middleware
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
+from starlette.middleware.cors import CORSMiddleware
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize FastMCP server
 mcp = FastMCP("Currency Converter")
+
+# Authentication Middleware for MCP Connection
+class MCPAuthMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        # Get the MCP authentication token from headers
+        mcp_auth_token = request.headers.get("mcp-authentication")
+        
+        # Get expected token from environment
+        expected_token = os.getenv("MCP_AUTH_TOKEN")
+        
+        if not expected_token:
+            return JSONResponse(
+                {"error": "Server configuration error: MCP_AUTH_TOKEN not set"},
+                status_code=500
+            )
+        
+        # Validate MCP authentication
+        if not mcp_auth_token:
+            return JSONResponse(
+                {"error": "Unauthorized: MCP-Auth header required"},
+                status_code=401
+            )
+        
+        if mcp_auth_token != expected_token:
+            return JSONResponse(
+                {"error": "Unauthorized: Invalid MCP authentication token"},
+                status_code=403
+            )
+        
+        # If authentication passes, continue to the actual request
+        response = await call_next(request)
+        return response
 
 
 # Get API key from environment or headers
@@ -106,5 +143,21 @@ async def convert_currency(
 
 
 if __name__ == "__main__":
-    # Run the MCP server
-    mcp.run(transport="http", host="localhost", port=8000)
+   # Define middleware stack
+    middleware = [
+        Middleware(MCPAuthMiddleware),  # Your auth middleware first
+        Middleware(
+            CORSMiddleware,
+            allow_origins=["*"],          # Allow all origins (restrict in production!)
+            allow_methods=["*"],          # Allow all HTTP methods
+            allow_headers=["*"],          # Allow all headers
+            allow_credentials=True,       # Optional: if you need cookies/auth
+            expose_headers=["*"],         # Optional: expose any custom headers
+        ),
+    ]
+
+    # Create the HTTP ASGI app with the middleware applied
+    app = mcp.http_app(middleware=middleware)
+
+    # Run with uvicorn
+    uvicorn.run(app, host="localhost", port=8000)
