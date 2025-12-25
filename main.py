@@ -167,5 +167,5 @@ if __name__ == "__main__":
     # Create the HTTP ASGI app with the conditional middleware
     app = mcp.http_app(middleware=middleware)
 
-    # Run with uvicorn
-    uvicorn.run(app, host="localhost", port=8000)
+    # Run with uvicorn using wsproto to avoid websockets deprecation warnings
+    uvicorn.run(app, host="localhost", port=8000, ws="wsproto")
