@@ -14,7 +14,7 @@ load_dotenv()
 # Initialize FastMCP server
 mcp = FastMCP("Currency Converter")
 
-# Authentication Middleware for MCP Connection
+# Authentication Middleware for MCP Connection (optional based on env)
 class MCPAuthMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         # Get the MCP authentication token from headers
@@ -23,11 +23,12 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
         # Get expected token from environment
         expected_token = os.getenv("MCP_AUTH_TOKEN")
         
+        # This should never happen if middleware is conditionally added,
+        # but kept for safety
         if not expected_token:
-            return JSONResponse(
-                {"error": "Server configuration error: MCP_AUTH_TOKEN not set"},
-                status_code=500
-            )
+            # If no token configured, allow request to proceed
+            response = await call_next(request)
+            return response
         
         # Validate MCP authentication
         if not mcp_auth_token:
@@ -42,7 +43,7 @@ class MCPAuthMiddleware(BaseHTTPMiddleware):
                 status_code=403
             )
         
-        # If authentication passes, continue to the actual request
+        # If authentication passes, continue
         response = await call_next(request)
         return response
 
@@ -143,20 +144,27 @@ async def convert_currency(
 
 
 if __name__ == "__main__":
-   # Define middleware stack
-    middleware = [
-        Middleware(MCPAuthMiddleware),  # Your auth middleware first
+    # Build middleware list conditionally
+    middleware = []
+
+    # Only add MCPAuthMiddleware if MCP_AUTH_TOKEN is set and non-empty
+    mcp_auth_token = os.getenv("MCP_AUTH_TOKEN")
+    if mcp_auth_token and mcp_auth_token.strip():
+        middleware.append(Middleware(MCPAuthMiddleware))
+
+    # Always add CORS middleware
+    middleware.append(
         Middleware(
             CORSMiddleware,
-            allow_origins=["*"],          # Allow all origins (restrict in production!)
-            allow_methods=["*"],          # Allow all HTTP methods
-            allow_headers=["*"],          # Allow all headers
-            allow_credentials=True,       # Optional: if you need cookies/auth
-            expose_headers=["*"],         # Optional: expose any custom headers
-        ),
-    ]
+            allow_origins=["*"],          # Restrict in production!
+            allow_methods=["*"],
+            allow_headers=["*"],
+            allow_credentials=True,
+            expose_headers=["*"],
+        )
+    )
 
-    # Create the HTTP ASGI app with the middleware applied
+    # Create the HTTP ASGI app with the conditional middleware
     app = mcp.http_app(middleware=middleware)
 
     # Run with uvicorn
