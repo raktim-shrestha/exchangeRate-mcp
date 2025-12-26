@@ -8,4 +8,4 @@ services:
     restart: unless-stopped
     environment:
       - MCP_AUTH_TOKEN=${MCP_AUTH_TOKEN}
-      - EXCHANGE_API_KEY=${EXCHANGE_API_KEY}
+      # - EXCHANGE_API_KEY=${EXCHANGE_API_KEY}
