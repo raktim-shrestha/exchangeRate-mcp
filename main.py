@@ -152,7 +152,7 @@ async def get_bullion_prices() -> dict:
         Dictionary with fine gold and silver prices in specified unit and NPR currency, along with date
     """
     try:
-        url = "https://n8n.rumsan.net/webhook/bullion"
+        url = os.getenv("BULLION_URL")
 
         # Make API request
         async with httpx.AsyncClient() as client:
@@ -190,7 +190,7 @@ async def get_forex_rates(currency: str = None) -> dict:
         Dictionary with forex rates including buy and sell prices, or filtered rate for specific currency
     """
     try:
-        url = "https://n8n.rumsan.net/webhook/forex"
+        url = os.getenv("FOREX_URL")
 
         # Make API request
         async with httpx.AsyncClient() as client:
@@ -257,10 +257,5 @@ if __name__ == "__main__":
             expose_headers=["*"],
         )
     )
-
-    # Create the HTTP ASGI app with the conditional middleware
     app = mcp.http_app(middleware=middleware)
-
-    # Run with uvicorn using wsproto to avoid websockets deprecation warnings
-    # Use 0.0.0.0 to allow connections from outside the container (Docker)
     uvicorn.run(app, host="0.0.0.0", port=8000, ws="wsproto")

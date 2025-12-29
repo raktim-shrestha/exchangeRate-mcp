@@ -1,96 +1,46 @@
-# Currency Converter API (FastMCP)
+## Steps to Start the Project
 
-## Description
-The Currency Converter API is a lightweight and efficient service built using FastMCP. It allows users to convert amounts between different currencies using the ExchangeRate-API. The project is designed to be simple, fast, and easy to integrate into other applications.
+1. **Clone the Repository**:
 
-## Features
-- Convert amounts between any two supported currencies.
-- Handles API key management via headers or environment variables.
-- Provides detailed error messages for unsupported currencies, invalid API keys, and more.
-- Asynchronous API calls for better performance.
-
-## Installation
-
-1. Clone the repository:
    ```bash
-   git clone <repository-url> currency-converter-api
+   git clone <repository-url> banking-mcps
    ```
 
-2. Navigate to the project directory:
+2. **Navigate to the Project Directory**:
+
    ```bash
-   cd currency-converter-api
+   cd banking-mcps
    ```
 
-3. Install dependencies:
-   ```bash
-    uv add -r requirements.txt
-   ```
+3. **Create a `.env` File**:
+   Copy the example environment file and add your env variable key:
 
-4. Create a `.env` file in the root directory and add your ExchangeRate-API key using:
-   ```sh
+   ```bash
    cp env.example .env
    ```
 
-## Usage
+4. **Build and Start the Docker Containers**:
+   Use Docker Compose to build and start the containers:
 
-1. Start the server:
    ```bash
-   uv run main.py
+   docker-compose up --build
    ```
 
-2. Access the API at `http://localhost:8000`.
+5. **Run MCP Inspector**:
+   MCP Inspector can be used to test and inspect the MCP server. To test the running mcp server using MCP Inspector, follow these steps:
 
-3. Add the MCP server information in the mcp.json in <strong>VSCode</strong>
+- Start MCP Inspector:
 
-- ctrl + shift + p > MCP: Open User Configuration
-- add the following lines:
-
-```json
-{
-    "servers": {
-        "exchange-rate-mcp": {
-			"url": "http://localhost:8000/mcp",
-			"type": "http"
-		}
-    }
-}
-```
-
-
-## API Endpoints
-
-### `GET /mcp`
-- **Description**: Returns the list of available tools.
-
-### `POST /mcp/convert_currency`
-- **Description**: Converts an amount from one currency to another.
-- **Request Body**:
-  ```json
-  {
-    "amount": 1,
-    "from_currency": "USD",
-    "to_currency": "NPR"
-  }
-  ```
-- **Response**:
-  ```json
-  {
-    "success": true,
-    "from": "USD",
-    "to": "NPR",
-    "amount": 1,
-    "conversion_rate": 143.6115,
-    "converted_amount": 143.6115,
-    "last_update": "Tue, 23 Dec 2025 00:00:01 +0000",
-    "message": "1.0 USD = 143.61 NPR"
-  }
+  ```bash
+  npx @modelcontextprotocol/inspector http://localhost:8000/mcp
   ```
 
-## Environment Variables
-The following environment variables are required:
-- `EXCHANGE_API_KEY`: Your API key for ExchangeRate-API.
+- Test the available tools and endpoints directly from the MCP Inspector interface.
 
-## Dependencies
-- `fastmcp`
-- `httpx`
-- `python-dotenv`
+- In the Authentication section, Add the custom auth as following
+  - header name: mcp-authentication
+  - header value: <MCP_AUTH_TOKEN>
+
+## Notes
+
+- The `docker-compose.yml` file is pre-configured to expose the API on port `8000`. If you need to change the port, update the `docker-compose.yml` file accordingly.
