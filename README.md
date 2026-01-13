@@ -23,7 +23,7 @@
    Use Docker Compose to build and start the containers:
 
    ```bash
-   docker-compose up --build
+   docker compose up --build
    ```
 
 5. **Run MCP Inspector**:

@@ -7,12 +7,65 @@ from starlette.middleware import Middleware
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 from starlette.middleware.cors import CORSMiddleware
+from datetime import datetime, timedelta
+import pytz
 
 # Load environment variables from .env file
 load_dotenv()
 
 # Initialize FastMCP server
 mcp = FastMCP("Currency Converter")
+
+# Cache storage with expiration
+_cache = {
+    "forex": {"data": None, "expires_at": None},
+    "bullion": {"data": None, "expires_at": None},
+}
+
+def get_cache_expiration() -> datetime:
+    """
+    Calculate cache expiration time - next 11 AM NPT.
+    If current time is before 11 AM, expire at 11 AM today.
+    If current time is after 11 AM, expire at 11 AM tomorrow.
+    """
+    npt_tz = pytz.timezone("Asia/Kathmandu")
+    now = datetime.now(npt_tz)
+    
+    # Set expiration to 11 AM today
+    expiration = now.replace(hour=11, minute=0, second=0, microsecond=0)
+    
+    # If we're past 11 AM, set it to 11 AM tomorrow
+    if now >= expiration:
+        expiration += timedelta(days=1)
+    
+    return expiration
+
+def is_cache_valid(cache_key: str) -> bool:
+    """Check if cache is valid for the given key."""
+    cache_entry = _cache.get(cache_key)
+    if not cache_entry or cache_entry["data"] is None:
+        return False
+    
+    expires_at = cache_entry["expires_at"]
+    if expires_at is None:
+        return False
+    
+    npt_tz = pytz.timezone("Asia/Kathmandu")
+    now = datetime.now(npt_tz)
+    return now < expires_at
+
+def set_cache(cache_key: str, data: dict) -> None:
+    """Set cache data with expiration."""
+    _cache[cache_key] = {
+        "data": data,
+        "expires_at": get_cache_expiration()
+    }
+
+def get_cache(cache_key: str):
+    """Get cached data if valid."""
+    if is_cache_valid(cache_key):
+        return _cache[cache_key]["data"]
+    return None
 
 # Authentication Middleware for MCP Connection (optional based on env)
 class MCPAuthMiddleware(BaseHTTPMiddleware):
@@ -146,12 +199,23 @@ def get_api_key(context) -> str:
 @mcp.tool()
 async def get_bullion_prices() -> dict:
     """
-    Get current gold and silver prices in NPR currency.
+    Fetch current bullion (gold and silver) prices for Nepal in NPR currency.
 
-    Returns:
-        Dictionary with fine gold and silver prices in specified unit and NPR currency, along with date
+    This tool returns a clear, machine-readable schema so language models
+    can confidently select it when the user asks for bullion prices.
+
+    Example usage by LLMs: choose this tool when the user asks for "today's gold price", "current
+    gold price in NPR", "silver rate in NPR", or "bullion prices in Nepal".
+    
+    Note: Results are cached until 11 AM NPT daily to reduce latency and API calls.
     """
     try:
+        # Check cache first
+        cached_data = get_cache("bullion")
+        if cached_data:
+            cached_data["cached"] = True
+            return cached_data
+        
         url = os.getenv("BULLION_URL")
 
         # Make API request
@@ -160,15 +224,38 @@ async def get_bullion_prices() -> dict:
             response.raise_for_status()
             data = response.json()
 
-        # Return formatted response
-        return {
+        # Build a clear, machine-readable response while keeping
+        # legacy top-level keys for compatibility.
+        unit = data.get("unit")
+        fine_gold = data.get("fine_gold")
+        silver = data.get("silver")
+        date = data.get("date")
+
+        result = {
             "success": True,
-            "fine_gold": data.get("fine_gold"),
-            "silver": data.get("silver"),
-            "unit": data.get("unit"),
-            "date": data.get("date"),
-            "message": f"Fine Gold: {data.get('fine_gold')} per {data.get('unit')}, Silver: {data.get('silver')} per {data.get('unit')} (as of {data.get('date')})",
+            "tool": "get_bullion_prices",
+            "category": "bullion_prices",
+            "schema_version": "1.0",
+            "cached": False,
+            # Machine-readable payload
+            "data": {
+                "gold": {"amount": fine_gold, "unit": unit, "currency": "NPR"},
+                "silver": {"amount": silver, "unit": unit, "currency": "NPR"},
+                "date": date,
+                "source": url,
+            },
+            # Backwards-compatible keys
+            "fine_gold": fine_gold,
+            "silver": silver,
+            "unit": unit,
+            "date": date,
+            "raw": data,
+            "message": f"Fine Gold: {fine_gold} per {unit}, Silver: {silver} per {unit} (as of {date})",
         }
+        
+        # Cache the result
+        set_cache("bullion", result)
+        return result
 
     except httpx.TimeoutException:
         return {"error": "Request timed out. Please try again.", "success": False}
@@ -178,55 +265,171 @@ async def get_bullion_prices() -> dict:
         return {"error": f"Unexpected error: {str(e)}", "success": False}
 
 
-@mcp.tool()
-async def get_forex_rates(currency: str = None) -> dict:
+@mcp.resource("banking://rates/daily")
+async def get_banking_rates() -> str:
     """
-    Get current forex exchange rates for various currencies in NPR.
-
-    Args:
-        currency: Optional currency code to filter (e.g., USD, EUR, GBP). If not provided, returns all rates.
-
+    Get daily banking rates information from Nepal Rastra Bank.
+    
+    This resource provides a consolidated view of forex and bullion rates
+    that are updated daily at 11:00 AM NPT.
+    
     Returns:
-        Dictionary with forex rates including buy and sell prices, or filtered rate for specific currency
+        A formatted string with current banking rates information.
+    
+    Note: Results are cached until 11 AM NPT daily to reduce latency and API calls.
     """
     try:
-        url = os.getenv("FOREX_URL")
-
-        # Make API request
-        async with httpx.AsyncClient() as client:
-            response = await client.get(url, timeout=10.0)
-            response.raise_for_status()
-            data = response.json()
-
-        # If currency is specified, filter for that currency
-        if currency:
-            currency_lower = currency.lower().strip()
-            filtered = [rate for rate in data if rate.get("currency") == currency_lower]
+        # Try to get from cache first
+        forex_data = get_cache("forex")
+        bullion_data = get_cache("bullion")
+        from_cache = forex_data is not None and bullion_data is not None
+        
+        if not forex_data or not bullion_data:
+            forex_url = os.getenv("FOREX_URL")
+            bullion_url = os.getenv("BULLION_URL")
             
-            if not filtered:
-                available_currencies = ", ".join([rate.get("currency", "").upper() for rate in data])
-                return {
-                    "error": f"Currency '{currency.upper()}' not found. Available currencies: {available_currencies}",
-                    "success": False
-                }
+            async with httpx.AsyncClient() as client:
+                # Get forex rates if not cached
+                if not forex_data:
+                    forex_response = await client.get(forex_url, timeout=10.0)
+                    forex_response.raise_for_status()
+                    forex_data = forex_response.json()
+                    set_cache("forex", forex_data)
+                
+                # Get bullion prices if not cached
+                if not bullion_data:
+                    bullion_response = await client.get(bullion_url, timeout=10.0)
+                    bullion_response.raise_for_status()
+                    bullion_data = bullion_response.json()
+                    # Cache the raw bullion data separately for resource
+                    set_cache("bullion", bullion_data)
+        
+        # Format the response
+        result = "# Nepal Rastra Bank - Daily Banking Rates\n\n"
+        result += f"**Last Updated:** {forex_data[0].get('date', 'N/A')} at 11:00 AM NPT\n"
+        result += f"**Cached:** {'Yes' if from_cache else 'No'}\n\n"
+        
+        # Bullion Prices - handle both cached dict and raw dict
+        bullion_raw = bullion_data.get('raw', bullion_data) if isinstance(bullion_data, dict) and 'raw' in bullion_data else bullion_data
+        result += "## Bullion Prices (NPR)\n\n"
+        result += f"- **Fine Gold:** NPR {bullion_raw.get('fine_gold')} per {bullion_raw.get('unit')}\n"
+        result += f"- **Silver:** NPR {bullion_raw.get('silver')} per {bullion_raw.get('unit')}\n"
+        result += f"- **Date:** {bullion_raw.get('date')}\n\n"
+        
+        # Forex Rates
+        result += "## Foreign Exchange Rates\n\n"
+        result += "| Currency | Unit | Buy (NPR) | Sell (NPR) |\n"
+        result += "|----------|------|-----------|------------|\n"
+        
+        for rate in forex_data[:10]:  # Show top 10 currencies
+            currency = rate.get('currency', '').upper()
+            unit = rate.get('unit', 1)
+            buy = rate.get('buy', 'N/A')
+            sell = rate.get('sell', 'N/A')
+            result += f"| {currency} | {unit} | {buy} | {sell} |\n"
+        
+        result += f"\n**Total Currencies Available:** {len(forex_data)}\n"
+        result += "\n---\n"
+        result += "*Rates are updated daily at 11:00 AM NPT by Nepal Rastra Bank*\n"
+        
+        return result
+        
+    except Exception as e:
+        return f"Error fetching banking rates: {str(e)}"
+
+
+@mcp.tool()
+async def get_forex_rates(currency: str) -> dict:
+    """
+    Fetch current forex buying and selling rates (NPR) provided by Nepal Rastra Bank.
+
+    This tool is intended for requests seeking official Nepalese foreign
+    exchange rates denominated in Nepalese Rupee (NPR). Language models should
+    prefer this tool when the user asks for NRB / Nepal Rastra Bank buy/sell
+    rates, forex rates, or currency conversion references tied to
+    Nepal's official rates.
+
+    Args:
+        currency: ISO currency code to filter (e.g., USD, EUR, INR), or "ALL" to retrieve all rates.
+            When a specific currency code is provided, returns a single structured rate object.
+            Use "ALL" to get the complete list of all available forex rates.
+
+    Example usage: "What's the USD buying rate in NPR?", "Show NRB forex rates", or
+    "Nepal Rastra Bank buy/sell rates for EUR".
+    
+    Note: Results are cached until 11 AM NPT daily to reduce latency and API calls.
+    """
+    try:
+        # Check cache first
+        cached_data = get_cache("forex")
+        data = cached_data if cached_data else None
+        from_cache = data is not None
+        
+        if not data:
+            url = os.getenv("FOREX_URL")
+
+            # Make API request
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, timeout=10.0)
+                response.raise_for_status()
+                data = response.json()
             
-            rate_info = filtered[0]
+            # Cache the raw data
+            set_cache("forex", data)
+
+        # If currency is "ALL", return all rates
+        if currency.upper().strip() == "ALL":
             return {
                 "success": True,
-                "currency": rate_info.get("currency", "").upper(),
-                "unit": rate_info.get("unit"),
-                "buy": rate_info.get("buy"),
-                "sell": rate_info.get("sell"),
-                "date": rate_info.get("date"),
-                "message": f"{rate_info.get('currency', '').upper()} - Buy: NPR {rate_info.get('buy')}, Sell: NPR {rate_info.get('sell')} per {rate_info.get('unit')} unit(s)"
+                "tool": "get_forex_rates",
+                "category": "forex_rates",
+                "schema_version": "1.0",
+                "cached": from_cache,
+                "data": {"rates": data, "source": os.getenv("FOREX_URL")},
+                "rates": data,
+                "count": len(data),
+                "raw": data,
+                "message": f"Retrieved {len(data)} forex rates from Nepal Rastra Bank",
             }
 
-        # Return all rates
+        # Filter for the specific currency
+        currency_lower = currency.lower().strip()
+        filtered = [rate for rate in data if rate.get("currency") == currency_lower]
+
+        if not filtered:
+            available_currencies = ", ".join([rate.get("currency", "").upper() for rate in data])
+            return {
+                "success": False,
+                "error": f"Currency '{currency.upper()}' not found. Available currencies: {available_currencies}",
+                "tool": "get_forex_rates",
+                "category": "forex_rates",
+            }
+
+        rate_info = filtered[0]
+        rate_obj = {
+            "currency": rate_info.get("currency", "").upper(),
+            "unit": rate_info.get("unit"),
+            "buy": rate_info.get("buy"),
+            "sell": rate_info.get("sell"),
+            "date": rate_info.get("date"),
+            "source": os.getenv("FOREX_URL"),
+        }
+
         return {
             "success": True,
-            "rates": data,
-            "count": len(data),
-            "message": f"Retrieved {len(data)} forex rates"
+            "tool": "get_forex_rates",
+            "category": "forex_rates",
+            "schema_version": "1.0",
+            "cached": from_cache,
+            "data": rate_obj,
+            # Backwards-compatible keys
+            "currency": rate_obj["currency"],
+            "unit": rate_obj["unit"],
+            "buy": rate_obj["buy"],
+            "sell": rate_obj["sell"],
+            "date": rate_obj["date"],
+            "raw": rate_info,
+            "message": f"{rate_obj['currency']} - Buy: NPR {rate_obj['buy']}, Sell: NPR {rate_obj['sell']} per {rate_obj['unit']} unit(s)",
         }
 
     except httpx.TimeoutException:
@@ -250,7 +453,7 @@ if __name__ == "__main__":
     middleware.append(
         Middleware(
             CORSMiddleware,
-            allow_origins=["*"],          # Restrict in production!
+            allow_origins=[*],          
             allow_methods=["*"],
             allow_headers=["*"],
             allow_credentials=True,

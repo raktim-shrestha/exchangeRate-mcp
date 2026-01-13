@@ -8,6 +8,7 @@ dependencies = [
     "fastmcp>=2.14.1",
     "httpx>=0.28.1",
     "python-dotenv>=1.2.1",
+    "pytz>=2025.2",
     "uvicorn[standard]>=0.40.0",
     "wsproto>=1.2.0",
 ]
